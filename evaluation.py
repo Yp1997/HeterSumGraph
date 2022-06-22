@@ -84,7 +84,7 @@ def run_test(model, dataset, loader, model_name, hps):
 
         for i, (G, index) in enumerate(loader):
             if hps.cuda:
-                G.to(torch.device("cuda"))
+                G = G.to(torch.device("cuda"))
             tester.evaluation(G, index, dataset, blocking=hps.blocking)
 
     running_avg_loss = tester.running_avg_loss
@@ -101,7 +101,7 @@ def run_test(model, dataset, loader, model_name, hps):
         logger.error("During testing, no hyps is selected!")
         sys.exit(1)
 
-    if hps.use_pyrouge:
+    if hps.use_pyrouge == "True":
         if isinstance(tester.refer[0], list):
             logger.info("Multi Reference summaries!")
             scores_all = utils.pyrouge_score_all_multi(tester.hyps, tester.refer)
@@ -119,7 +119,7 @@ def run_test(model, dataset, loader, model_name, hps):
     tester.getMetric()
     tester.SaveDecodeFile()
     logger.info('[INFO] End of test | time: {:5.2f}s | test loss {:5.4f} | '.format((time.time() - iter_start_time),float(running_avg_loss)))
-
+    
 
 
 def main():
@@ -129,6 +129,7 @@ def main():
     parser.add_argument('--data_dir', type=str, default='data/CNNDM', help='The dataset directory.')
     parser.add_argument('--cache_dir', type=str, default='cache/CNNDM', help='The processed dataset directory')
     parser.add_argument('--embedding_path', type=str, default='/remote-home/dqwang/Glove/glove.42B.300d.txt', help='Path expression to external word embedding.')
+    parser.add_argument('--lang', type=str, default='english', help='type of lang to stop words.')
 
     # Important settings
     parser.add_argument('--model', type=str, default="HSumGraph", help="model structure[HSG|HDSG]")
@@ -211,7 +212,7 @@ def main():
     if hps.model == "HSG":
         model = HSumGraph(hps, embed)
         logger.info("[MODEL] HeterSumGraph ")
-        dataset = ExampleSet(DATA_FILE, vocab, hps.doc_max_timesteps, hps.sent_max_len, FILTER_WORD, test_w2s_path)
+        dataset = ExampleSet(DATA_FILE, vocab, hps.doc_max_timesteps, hps.sent_max_len, FILTER_WORD, test_w2s_path, "graph-test", args.lang)
         loader = torch.utils.data.DataLoader(dataset, batch_size=hps.batch_size, shuffle=True, num_workers=32,collate_fn=graph_collate_fn)
     elif hps.model == "HDSG":
         model = HSumDocGraph(hps, embed)
@@ -224,7 +225,7 @@ def main():
         raise NotImplementedError("Model Type has not been implemented")
 
     if args.cuda:
-        model.to(torch.device("cuda:0"))
+        model.to(torch.device("cuda"))
         logger.info("[INFO] Use cuda")
 
     logger.info("[INFO] Decoding...")

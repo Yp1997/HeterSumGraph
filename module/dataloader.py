@@ -45,11 +45,8 @@ from tools.logger import *
 import dgl
 from dgl.data.utils import save_graphs, load_graphs
 
-FILTERWORD = stopwords.words('english')
 punctuations = [',', '.', ':', ';', '?', '(', ')', '[', ']', '&', '!', '*', '@', '#', '$', '%', '\'\'', '\'', '`', '``',
                 '-', '--', '|', '\/']
-FILTERWORD.extend(punctuations)
-
 
 ######################################### Example #########################################
 
@@ -136,13 +133,12 @@ class Example2(Example):
             self.enc_doc_input.append(catDoc(self.enc_sent_input[cur:cur + docLen]))
             cur += docLen
 
-
 ######################################### ExampleSet #########################################
 
 class ExampleSet(torch.utils.data.Dataset):
     """ Constructor: Dataset of example(object) for single document summarization"""
 
-    def __init__(self, data_path, vocab, doc_max_timesteps, sent_max_len, filter_word_path, w2s_path):
+    def __init__(self, data_path, vocab, doc_max_timesteps, sent_max_len, filter_word_path, w2s_path, graph_dir, lang):
         """ Initializes the ExampleSet with the path of data
         
         :param data_path: string; the path of data
@@ -159,6 +155,10 @@ class ExampleSet(torch.utils.data.Dataset):
 
         logger.info("[INFO] Start reading %s", self.__class__.__name__)
         start = time.time()
+        self.data_dir = os.path.join(os.path.dirname(data_path), graph_dir)
+        if not os.path.isdir(self.data_dir):
+            os.mkdir(self.data_dir)
+        #self.hi_example_set = LoadHiExampleSet(self.data_dir)
         self.example_list = readJson(data_path)
         logger.info("[INFO] Finish reading %s. Total time is %f, Total size is %d", self.__class__.__name__,
                     time.time() - start, len(self.example_list))
@@ -166,6 +166,13 @@ class ExampleSet(torch.utils.data.Dataset):
 
         logger.info("[INFO] Loading filter word File %s", filter_word_path)
         tfidf_w = readText(filter_word_path)
+        # filter words
+        if lang in ['english']:
+            FILTERWORD = stopwords.words(lang)
+        else:
+            FILTERWORD = []
+        FILTERWORD.extend(punctuations)
+        
         self.filterwords = FILTERWORD
         self.filterids = [vocab.word2id(w.lower()) for w in FILTERWORD]
         self.filterids.append(vocab.word2id("[PAD]"))   # keep "[UNK]" but remove "[PAD]"
@@ -184,11 +191,15 @@ class ExampleSet(torch.utils.data.Dataset):
         logger.info("[INFO] Loading word2sent TFIDF file from %s!" % w2s_path)
         self.w2s_tfidf = readJson(w2s_path)
 
-    def get_example(self, index):
+    def get_example(self, index, ret_fid=False):
         e = self.example_list[index]
         e["summary"] = e.setdefault("summary", [])
         example = Example(e["text"], e["summary"], self.vocab, self.sent_max_len, e["label"])
-        return example
+        
+        if ret_fid:
+            return example, e["file_id"]
+        else:
+            return example
 
     def pad_label_m(self, label_matrix):
         label_m = label_matrix[:self.doc_max_timesteps, :self.doc_max_timesteps]
@@ -233,6 +244,7 @@ class ExampleSet(torch.utils.data.Dataset):
                 word2sent, sent2word:  tffrac=int, dtype=0
         """
         G = dgl.DGLGraph()
+        #G = dgl.graph()
         wid2nid, nid2wid = self.AddWordNode(G, input_pad)
         w_nodes = len(nid2wid)
 
@@ -278,14 +290,336 @@ class ExampleSet(torch.utils.data.Dataset):
         input_pad = item.enc_sent_input_pad[:self.doc_max_timesteps]
         label = self.pad_label_m(item.label_matrix)
         w2s_w = self.w2s_tfidf[index]
+        #try:
+        #    G, _ = self.hi_example_set[index]
+        #except:
+        #    G = self.CreateGraph(input_pad, label, w2s_w)
+        #    save_graphs(os.path.join(self.data_dir, str(index) + ".graph.bin"), [G])
         G = self.CreateGraph(input_pad, label, w2s_w)
-
+            
         return G, index
 
     def __len__(self):
         return self.size
 
+class ExampleSetBert(torch.utils.data.Dataset):
+    """ Constructor: Dataset of example(object) for single document summarization"""
 
+    def __init__(self, data_path, vocab, doc_max_timesteps, sent_max_len, filter_word_path, w2s_path, graph_dir, lang):
+        """ Initializes the ExampleSet with the path of data
+        
+        :param data_path: string; the path of data
+        :param vocab: object;
+        :param doc_max_timesteps: int; the maximum sentence number of a document, each example should pad sentences to this length
+        :param sent_max_len: int; the maximum token number of a sentence, each sentence should pad tokens to this length
+        :param filter_word_path: str; file path, the file must contain one word for each line and the tfidf value must go from low to high (the format can refer to script/lowTFIDFWords.py) 
+        :param w2s_path: str; file path, each line in the file contain a json format data (which can refer to the format can refer to script/calw2sTFIDF.py)
+        """
+
+        self.vocab = vocab
+        self.sent_max_len = sent_max_len
+        self.doc_max_timesteps = doc_max_timesteps
+
+        logger.info("[INFO] Start reading %s", self.__class__.__name__)
+        start = time.time()
+        self.data_dir = os.path.join(os.path.dirname(data_path), graph_dir)
+        if not os.path.isdir(self.data_dir):
+            os.mkdir(self.data_dir)
+        #self.hi_example_set = LoadHiExampleSet(self.data_dir)
+        self.example_list = readJson(data_path)
+        logger.info("[INFO] Finish reading %s. Total time is %f, Total size is %d", self.__class__.__name__,
+                    time.time() - start, len(self.example_list))
+        self.size = len(self.example_list)
+
+        logger.info("[INFO] Loading filter word File %s", filter_word_path)
+        tfidf_w = readText(filter_word_path)
+        if lang in ['english']:
+            FILTERWORD = stopwords.words(lang)
+        else:
+            FILTERWORD = []
+        FILTERWORD.extend(punctuations)
+        self.filterwords = FILTERWORD
+        self.filterids = [vocab.word2id(w.lower()) for w in FILTERWORD]
+        self.filterids.append(vocab.word2id("[PAD]"))   # keep "[UNK]" but remove "[PAD]"
+        lowtfidf_num = 0
+        pattern = r"^[0-9]+$"
+        for w in tfidf_w:
+            if vocab.word2id(w) != vocab.word2id('[UNK]'):
+                self.filterwords.append(w)
+                self.filterids.append(vocab.word2id(w))
+                # if re.search(pattern, w) == None:  # if w is a number, it will not increase the lowtfidf_num
+                    # lowtfidf_num += 1
+                lowtfidf_num += 1
+            if lowtfidf_num > 5000:
+                break
+
+        logger.info("[INFO] Loading word2sent TFIDF file from %s!" % w2s_path)
+        self.w2s_tfidf = readJson(w2s_path)
+
+    def get_example(self, index):
+        e = self.example_list[index]
+        e["summary"] = e.setdefault("summary", [])
+        example = Example(e["text"], e["summary"], self.vocab, self.sent_max_len, e["label"])
+        bert_example = [e["src"], e["segs"], e["clss"]]
+        return example, bert_example
+
+    def pad_label_m(self, label_matrix):
+        label_m = label_matrix[:self.doc_max_timesteps, :self.doc_max_timesteps]
+        N, m = label_m.shape
+        if m < self.doc_max_timesteps:
+            pad_m = np.zeros((N, self.doc_max_timesteps - m))
+            return np.hstack([label_m, pad_m])
+        return label_m
+
+    def AddWordNode(self, G, inputid):
+        wid2nid = {}
+        nid2wid = {}
+        nid = 0
+        for sentid in inputid:
+            for wid in sentid:
+                if wid not in self.filterids and wid not in wid2nid.keys():
+                    wid2nid[wid] = nid
+                    nid2wid[nid] = wid
+                    nid += 1
+
+        w_nodes = len(nid2wid)
+
+        G.add_nodes(w_nodes)
+        G.set_n_initializer(dgl.init.zero_initializer)
+        G.ndata["unit"] = torch.zeros(w_nodes)
+        G.ndata["id"] = torch.LongTensor(list(nid2wid.values()))
+        G.ndata["dtype"] = torch.zeros(w_nodes)
+
+        return wid2nid, nid2wid
+
+    def CreateGraph(self, input_pad, label, w2s_w):
+        """ Create a graph for each document
+        
+        :param input_pad: list(list); [sentnum, wordnum]
+        :param label: list(list); [sentnum, sentnum]
+        :param w2s_w: dict(dict) {str: {str: float}}; for each sentence and each word, the tfidf between them
+        :return: G: dgl.DGLGraph
+            node:
+                word: unit=0, dtype=0, id=(int)wordid in vocab
+                sentence: unit=1, dtype=1, words=tensor, position=int, label=tensor
+            edge:
+                word2sent, sent2word:  tffrac=int, dtype=0
+        """
+        G = dgl.DGLGraph()
+        #G = dgl.graph()
+        wid2nid, nid2wid = self.AddWordNode(G, input_pad)
+        w_nodes = len(nid2wid)
+
+        N = len(input_pad)
+        G.add_nodes(N)
+        G.ndata["unit"][w_nodes:] = torch.ones(N)
+        G.ndata["dtype"][w_nodes:] = torch.ones(N)
+        sentid2nid = [i + w_nodes for i in range(N)]
+
+        G.set_e_initializer(dgl.init.zero_initializer)
+        for i in range(N):
+            c = Counter(input_pad[i])
+            sent_nid = sentid2nid[i]
+            sent_tfw = w2s_w[str(i)]
+            for wid in c.keys():
+                if wid in wid2nid.keys() and self.vocab.id2word(wid) in sent_tfw.keys():
+                    tfidf = sent_tfw[self.vocab.id2word(wid)]
+                    tfidf_box = np.round(tfidf * 9)  # box = 10
+                    G.add_edges(wid2nid[wid], sent_nid,
+                                data={"tffrac": torch.LongTensor([tfidf_box]), "dtype": torch.Tensor([0])})
+                    G.add_edges(sent_nid, wid2nid[wid],
+                                data={"tffrac": torch.LongTensor([tfidf_box]), "dtype": torch.Tensor([0])})
+            
+            # The two lines can be commented out if you use the code for your own training, since HSG does not use sent2sent edges. 
+            # However, if you want to use the released checkpoint directly, please leave them here.
+            # Otherwise it may cause some parameter corresponding errors due to the version differences.
+            G.add_edges(sent_nid, sentid2nid, data={"dtype": torch.ones(N)})
+            G.add_edges(sentid2nid, sent_nid, data={"dtype": torch.ones(N)})
+        G.nodes[sentid2nid].data["words"] = torch.LongTensor(input_pad)  # [N, seq_len]
+        G.nodes[sentid2nid].data["position"] = torch.arange(1, N + 1).view(-1, 1).long()  # [N, 1]
+        G.nodes[sentid2nid].data["label"] = torch.LongTensor(label)  # [N, doc_max]
+
+        return G
+
+    def __getitem__(self, index):
+        """
+        :param index: int; the index of the example
+        :return 
+            G: graph for the example
+            index: int; the index of the example in the dataset
+        """
+        item, bert_example = self.get_example(index)
+        input_pad = item.enc_sent_input_pad[:self.doc_max_timesteps]
+        label = self.pad_label_m(item.label_matrix)
+        w2s_w = self.w2s_tfidf[index]
+        G = self.CreateGraph(input_pad, label, w2s_w)
+        # bert example
+        src, segs, clss = bert_example
+            
+        return G, index, src, segs, clss
+
+    def __len__(self):
+        return self.size
+
+class ExampleSetBertCLS(torch.utils.data.Dataset):
+    """ Constructor: Dataset of example(object) for single document summarization"""
+
+    def __init__(self, data_path, vocab, doc_max_timesteps, sent_max_len, filter_word_path, w2s_path, batch_size):
+        """ Initializes the ExampleSet with the path of data
+        
+        :param data_path: string; the path of data
+        :param vocab: object;
+        :param doc_max_timesteps: int; the maximum sentence number of a document, each example should pad sentences to this length
+        :param sent_max_len: int; the maximum token number of a sentence, each sentence should pad tokens to this length
+        :param filter_word_path: str; file path, the file must contain one word for each line and the tfidf value must go from low to high (the format can refer to script/lowTFIDFWords.py) 
+        :param w2s_path: str; file path, each line in the file contain a json format data (which can refer to the format can refer to script/calw2sTFIDF.py)
+        """
+
+        self.vocab = vocab
+        self.sent_max_len = sent_max_len
+        self.doc_max_timesteps = doc_max_timesteps
+
+        logger.info("[INFO] Start reading %s", self.__class__.__name__)
+        start = time.time()
+        self.bert_data_dir = os.path.join(os.path.dirname(data_path), "bert")
+        self.batch_size = batch_size
+        #self.hi_example_set = LoadHiExampleSet(self.data_dir)
+        self.example_list = readJson(data_path)
+        
+        logger.info("[INFO] Finish reading %s. Total time is %f, Total size is %d", self.__class__.__name__,
+                    time.time() - start, len(self.example_list))
+        self.size = len(self.example_list)
+
+        logger.info("[INFO] Loading filter word File %s", filter_word_path)
+        tfidf_w = readText(filter_word_path)
+        if lang in ['english']:
+            FILTERWORD = stopwords.words(lang)
+        else:
+            FILTERWORD = []
+        FILTERWORD.extend(punctuations)
+        self.filterwords = FILTERWORD
+        self.filterids = [vocab.word2id(w.lower()) for w in FILTERWORD]
+        self.filterids.append(vocab.word2id("[PAD]"))   # keep "[UNK]" but remove "[PAD]"
+        lowtfidf_num = 0
+        pattern = r"^[0-9]+$"
+        for w in tfidf_w:
+            if vocab.word2id(w) != vocab.word2id('[UNK]'):
+                self.filterwords.append(w)
+                self.filterids.append(vocab.word2id(w))
+                # if re.search(pattern, w) == None:  # if w is a number, it will not increase the lowtfidf_num
+                    # lowtfidf_num += 1
+                lowtfidf_num += 1
+            if lowtfidf_num > 5000:
+                break
+
+        logger.info("[INFO] Loading word2sent TFIDF file from %s!" % w2s_path)
+        self.w2s_tfidf = readJson(w2s_path)
+
+    def get_example(self, index):
+        e = self.example_list[index]
+        e["summary"] = e.setdefault("summary", [])
+        example = Example(e["text"], e["summary"], self.vocab, self.sent_max_len, e["label"])
+        bert_example = e["cls"]
+        return example, bert_example
+
+    def pad_label_m(self, label_matrix):
+        label_m = label_matrix[:self.doc_max_timesteps, :self.doc_max_timesteps]
+        N, m = label_m.shape
+        if m < self.doc_max_timesteps:
+            pad_m = np.zeros((N, self.doc_max_timesteps - m))
+            return np.hstack([label_m, pad_m])
+        return label_m
+
+    def AddWordNode(self, G, inputid):
+        wid2nid = {}
+        nid2wid = {}
+        nid = 0
+        for sentid in inputid:
+            for wid in sentid:
+                if wid not in self.filterids and wid not in wid2nid.keys():
+                    wid2nid[wid] = nid
+                    nid2wid[nid] = wid
+                    nid += 1
+
+        w_nodes = len(nid2wid)
+
+        G.add_nodes(w_nodes)
+        G.set_n_initializer(dgl.init.zero_initializer)
+        G.ndata["unit"] = torch.zeros(w_nodes)
+        G.ndata["id"] = torch.LongTensor(list(nid2wid.values()))
+        G.ndata["dtype"] = torch.zeros(w_nodes)
+
+        return wid2nid, nid2wid
+
+    def CreateGraph(self, input_pad, label, w2s_w):
+        """ Create a graph for each document
+        
+        :param input_pad: list(list); [sentnum, wordnum]
+        :param label: list(list); [sentnum, sentnum]
+        :param w2s_w: dict(dict) {str: {str: float}}; for each sentence and each word, the tfidf between them
+        :return: G: dgl.DGLGraph
+            node:
+                word: unit=0, dtype=0, id=(int)wordid in vocab
+                sentence: unit=1, dtype=1, words=tensor, position=int, label=tensor
+            edge:
+                word2sent, sent2word:  tffrac=int, dtype=0
+        """
+        G = dgl.DGLGraph()
+        #G = dgl.graph()
+        wid2nid, nid2wid = self.AddWordNode(G, input_pad)
+        w_nodes = len(nid2wid)
+
+        N = len(input_pad)
+        G.add_nodes(N)
+        G.ndata["unit"][w_nodes:] = torch.ones(N)
+        G.ndata["dtype"][w_nodes:] = torch.ones(N)
+        sentid2nid = [i + w_nodes for i in range(N)]
+
+        G.set_e_initializer(dgl.init.zero_initializer)
+        for i in range(N):
+            c = Counter(input_pad[i])
+            sent_nid = sentid2nid[i]
+            sent_tfw = w2s_w[str(i)]
+            for wid in c.keys():
+                if wid in wid2nid.keys() and self.vocab.id2word(wid) in sent_tfw.keys():
+                    tfidf = sent_tfw[self.vocab.id2word(wid)]
+                    tfidf_box = np.round(tfidf * 9)  # box = 10
+                    G.add_edges(wid2nid[wid], sent_nid,
+                                data={"tffrac": torch.LongTensor([tfidf_box]), "dtype": torch.Tensor([0])})
+                    G.add_edges(sent_nid, wid2nid[wid],
+                                data={"tffrac": torch.LongTensor([tfidf_box]), "dtype": torch.Tensor([0])})
+            
+            # The two lines can be commented out if you use the code for your own training, since HSG does not use sent2sent edges. 
+            # However, if you want to use the released checkpoint directly, please leave them here.
+            # Otherwise it may cause some parameter corresponding errors due to the version differences.
+            G.add_edges(sent_nid, sentid2nid, data={"dtype": torch.ones(N)})
+            G.add_edges(sentid2nid, sent_nid, data={"dtype": torch.ones(N)})
+        G.nodes[sentid2nid].data["words"] = torch.LongTensor(input_pad)  # [N, seq_len]
+        G.nodes[sentid2nid].data["position"] = torch.arange(1, N + 1).view(-1, 1).long()  # [N, 1]
+        G.nodes[sentid2nid].data["label"] = torch.LongTensor(label)  # [N, doc_max]
+
+        return G
+
+    def __getitem__(self, index):
+        """
+        :param index: int; the index of the example
+        :return 
+            G: graph for the example
+            index: int; the index of the example in the dataset
+        """
+        item, bert_example = self.get_example(index)
+        input_pad = item.enc_sent_input_pad[:self.doc_max_timesteps]
+        label = self.pad_label_m(item.label_matrix)
+        w2s_w = self.w2s_tfidf[index]
+        G = self.CreateGraph(input_pad, label, w2s_w)
+        # bert example
+        cls = bert_example #[:self.doc_max_timesteps]
+        
+        return G, index, cls, self.doc_max_timesteps, self.batch_size
+
+    def __len__(self):
+        return self.size
+        
 class MultiExampleSet(ExampleSet):
     """ Constructor: Dataset of example(object) for multiple document summarization"""
     def __init__(self, data_path, vocab, doc_max_timesteps, sent_max_len, filter_word_path, w2s_path, w2d_path):
@@ -321,7 +655,7 @@ class MultiExampleSet(ExampleSet):
                 sent2doc[sentNo] = i
                 doc2sent[i].append(sentNo)
                 sentNo += 1
-                if sentNo >= sentNum:
+                if sentNo > sentNum:
                     return sent2doc
         return sent2doc
 
@@ -382,7 +716,7 @@ class MultiExampleSet(ExampleSet):
             # s2d
             docid = sent2doc[i]
             docnid = docid2nid[docid]
-            G.add_edge(sent_nid, docnid, data={"tffrac": torch.LongTensor([0]), "dtype": torch.Tensor([2])})
+            G.add_edge(sent_nid, docnid, data={"dtype": torch.Tensor([2])})
 
         # add doc edges
         for i in range(article_num):
@@ -457,7 +791,8 @@ def readJson(fname):
     data = []
     with open(fname, encoding="utf-8") as f:
         for line in f:
-            data.append(json.loads(line))
+            json_data = json.loads(line)
+            data.append(json_data)
     return data
 
 
@@ -467,6 +802,12 @@ def readText(fname):
         for line in f:
             data.append(line.strip())
     return data
+
+def padding(data, pad_id, width=-1):
+    if (width == -1):
+        width = max(len(d) for d in data)
+    rtn_data = [d + [pad_id] * (width - len(d)) for d in data]
+    return rtn_data
 
 
 def graph_collate_fn(samples):
@@ -479,3 +820,50 @@ def graph_collate_fn(samples):
     sorted_len, sorted_index = torch.sort(torch.LongTensor(graph_len), dim=0, descending=True)
     batched_graph = dgl.batch([graphs[idx] for idx in sorted_index])
     return batched_graph, [index[idx] for idx in sorted_index]
+
+def graph_collate_fn_bert(samples):
+    '''
+    :param batch: (G, input_pad, src, segs, clss)
+    :return: 
+    '''
+    graphs, index, pre_src, pre_segs, pre_clss = map(list, zip(*samples))
+    graph_len = [len(g.filter_nodes(lambda nodes: nodes.data["dtype"] == 1)) for g in graphs]  # sent node of graph
+    sorted_len, sorted_index = torch.sort(torch.LongTensor(graph_len), dim=0, descending=True)
+    batched_graph = dgl.batch([graphs[idx] for idx in sorted_index])
+    # bert
+    pre_src_sorted = [pre_src[idx] for idx in sorted_index]
+    pre_segs_sorted = [pre_segs[idx] for idx in sorted_index]
+    pre_clss_sorted = [pre_clss[idx] for idx in sorted_index]
+    src = torch.tensor(padding(pre_src_sorted, 0), dtype=torch.long)
+    segs = torch.tensor(padding(pre_segs_sorted, 0), dtype=torch.long)
+    clss = torch.tensor(padding(pre_clss_sorted, -1), dtype=torch.long)
+    mask = 1 - 1 * (src == 0)
+    mask_cls = 1 - 1 * (clss == -1)
+    clss[clss == -1] = 0
+    
+    return batched_graph, [index[idx] for idx in sorted_index], src, segs, clss, mask, mask_cls
+
+def graph_collate_fn_bertcls(samples):
+    '''
+    :param batch: (G, input_pad, src, segs, clss)
+    :return: 
+    '''
+    graphs, index, pre_cls, max_sent, batch_size = map(list, zip(*samples))
+    max_sent = max_sent[0]
+    batch_size = batch_size[0]
+    
+    graph_len = [len(g.filter_nodes(lambda nodes: nodes.data["dtype"] == 1)) for g in graphs]  # sent node of graph
+    sorted_len, sorted_index = torch.sort(torch.LongTensor(graph_len), dim=0, descending=True)
+    batched_graph = dgl.batch([graphs[idx] for idx in sorted_index])
+    # bert
+    cls_fns = {}
+    cls_sorted = []
+    for idx in sorted_index:
+        pc = pre_cls[idx]
+        if pc not in cls_fns:
+            cls_fns[pc] = np.load(pre_cls[idx], allow_pickle=True)
+        num_eg = index[idx] % batch_size
+        cls_sorted += cls_fns[pc][num_eg][:max_sent].tolist()
+    batched_cls = torch.tensor(cls_sorted)
+     
+    return batched_graph, [index[idx] for idx in sorted_index], batched_cls
